@@ -10,21 +10,13 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
-let CID = store.get('fs_cid', null); if (!CID) { CID = rid(); store.set('fs_cid', CID); }
 const CMP = new Set(store.get('fs_cmp', []));
 let M = null;              // meta
 let WATCH = new Set();     // watchlist ids
 
 /* ---------- helpers */
-async function api(path, { method = 'GET', body } = {}) {
-  const r = await fetch('/api' + path, { method, headers: { 'X-Client-Id': CID, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
-  if (!r.ok) {
-    let m = r.statusText;
-    try { const j = await r.json(); m = typeof j.detail === 'string' ? j.detail : (j.detail || []).map(d => d.msg).join('; ') || m; } catch { /* ignore */ }
-    throw new Error(m);
-  }
-  return r;
-}
+/** Answers the same paths the old server did, but in the browser (see data.js). Throws Error(message) on failure. */
+const api = (path, opts) => Data.request(path, opts);
 const J = async (p, o) => (await api(p, o)).json();
 const fnum = (v, d = 2) => v == null ? '–' : Number(v).toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
 const metric = k => M.by[k] || (k.startsWith('c:') ? { key: k, label: 'ƒ ' + k.slice(2), type: 'num', dec: 2, unit: '', group: 'Custom', custom: true } : null);
@@ -52,12 +44,13 @@ function modal({ title, body, footer = '', onMount }) {
 const greeting = () => { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; };
 
 /* ---------- screener state */
-const defaultCfg = () => ({
-  universe: 'all', filters: [{ key: 'plan', values: ['Growth'] }, { key: 'aum' }, { key: 'cagr_3y' }, { key: 'expense_ratio' }],
-  custom: [], sort_key: 'aum', sort_dir: 'desc', extra_cols: [], search: '',
-});
+const defaultCfg = () => {
+  const aum = !M || M.has_aum !== false, exp = !M || M.has_expense !== false;      // real data has no AUM / expense ratio until you supply them
+  return { universe: 'all', filters: [{ key: 'plan', values: ['Growth'] }, ...(aum ? [{ key: 'aum' }] : []), { key: 'cagr_3y' }, ...(exp ? [{ key: 'expense_ratio' }] : [])],
+    custom: [], sort_key: aum ? 'aum' : 'cagr_3y', sort_dir: 'desc', extra_cols: [], search: '' };
+};
 let S = { ...defaultCfg(), page: 1, size: 20, screenId: null, mine: false, name: '', note: '', total: 0, rows: [], wl: false, seq: 0 };
-const resetScreen = (over = {}) => { S = { ...S, ...defaultCfg(), page: 1, screenId: null, mine: false, name: '', note: '', wl: false, ...over }; };
+const resetScreen = (over = {}) => { S = { ...S, ...defaultCfg(), page: 1, screenId: null, mine: false, name: '', note: '', wl: false, shareKey: null, ...over }; };
 
 const baseCols = ['sub_category', 'plan'];
 const visibleCols = () => [...new Set([...baseCols, ...S.filters.map(f => f.key).filter(k => !['category', 'sub_category', 'plan'].includes(k)),
@@ -82,9 +75,13 @@ async function route() {
     if (r === 'fund') await pageFund(+arg, tok);
     else if (r === 'compare') await pageCompare(arg, tok);
     else if (r === 'screens') await pageScreens(tok);
-    else if (r === 'watchlist') { if (!S.wl) resetScreen({ universe: 'watchlist', filters: [{ key: 'aum' }, { key: 'cagr_3y' }, { key: 'expense_ratio' }], wl: true, name: 'Watchlist' }); pageScreener(); }
+    else if (['login', 'signup', 'verify', 'forgot', 'account', 'privacy'].includes(r)) Auth.page(r);
+    else if (r === 'watchlist') { if (!S.wl) resetScreen({ universe: 'watchlist', filters: defaultCfg().filters.slice(1), wl: true, name: 'Watchlist' }); pageScreener(); }
     else if (r === 'screen' && arg) {
-      if (S.screenId !== arg) { const sc = await J('/screens/' + encodeURIComponent(arg)); if (tok !== ROUTE) return; resetScreen({ ...sc.config, screenId: sc.id, mine: sc.mine, name: sc.name, note: sc.note }); S.custom = sc.config.custom || []; }
+      if (S.screenId !== arg) { const sc = await J('/screens/' + encodeURIComponent(arg)); if (tok !== ROUTE) return; resetScreen({ ...Data.sanitize(sc.config), screenId: sc.id, mine: sc.mine, name: sc.name, note: sc.note }); }
+      pageScreener();
+    } else if (r === 's' && arg) {                                  // share link of a browser-only screen: the screen is inside the URL
+      if (S.shareKey !== arg) { const sh = Data.decodeShare(arg); resetScreen({ ...sh.config, name: sh.name, note: sh.note }); S.shareKey = arg; }
       pageScreener();
     } else { if (S.wl) resetScreen(); pageScreener(); }
   } catch (e) {
@@ -135,7 +132,7 @@ function pageScreener() {
   $('#bNew').onclick = () => { resetScreen(); location.hash = '#/'; pageScreener(); };
   $('#bSave').onclick = () => saveScreen(false);
   const sn = $('#bSaveNew'); sn && (sn.onclick = () => saveScreen(true));
-  const sh = $('#bShare'); sh && (sh.onclick = async () => { const u = `${location.origin}/#/screen/${S.screenId}`; try { await navigator.clipboard.writeText(u); toast('Link copied'); } catch { prompt('Copy this link', u); } });
+  const sh = $('#bShare'); sh && (sh.onclick = async () => { const u = Data.shareUrl({ id: S.screenId, name: S.name, note: S.note, config: cfgOut() }); try { await navigator.clipboard.writeText(u); toast('Link copied'); } catch { prompt('Copy this link', u); } });
   $('#bExport').onclick = exportCsv;
   $('#bCols').onclick = e => columnsPop(e.currentTarget);
 }
@@ -145,7 +142,8 @@ async function saveScreen(asNew) {
   try {
     const sc = (S.screenId && S.mine && !asNew) ? await J('/screens/' + S.screenId, { method: 'PUT', body }) : await J('/screens', { method: 'POST', body });
     S.screenId = sc.id; S.mine = true; S.name = sc.name;
-    toast('Screen saved'); if ($('#sname')) { history.replaceState(null, '', '#/screen/' + sc.id); pageScreener(); }
+    S.shareKey = null; toast(Data.cloud() ? 'Screen saved' : 'Screen saved in this browser. Log in to keep it on all your devices.', Data.cloud() ? 2400 : 4500);
+    if ($('#sname')) { history.replaceState(null, '', '#/screen/' + sc.id); pageScreener(); }
   } catch (e) { toast('Could not save: ' + e.message, 4000); }
 }
 
@@ -310,13 +308,13 @@ async function loadResults() {
   tbl.classList.add('loading');
   try {
     const d = await J('/screen', { method: 'POST', body: reqBody() });
-    if (seq !== S.seq) return;
+    if (seq !== S.seq || !$('#tbl')) return;          // superseded, or the user already left the screener
     S.total = d.total; S.rows = d.results; S.pages = d.pages;
     if (S.page > d.pages) { S.page = d.pages; return loadResults(); }
     d.results.forEach(r => r.watch ? WATCH.add(r.id) : 0);
     renderTable(d);
   } catch (e) {
-    if (seq !== S.seq) return;
+    if (seq !== S.seq || !$('#tbl')) return;
     tbl.innerHTML = `<div class="empty"><h3>Could not load results</h3><p>${esc(e.message)}</p></div>`; $('#pager').innerHTML = '';
   } finally { tbl.classList.remove('loading'); }
 }
@@ -422,17 +420,17 @@ async function pageFund(id, tok = ROUTE) {
       ${retRows.map(([k, l]) => { const a = avg[k], df = a != null ? f[k] - a : null; return `<tr><td>${l}</td><td class="num ${tone(k, f[k])}">${fnum(f[k])}%</td><td class="num">${a != null ? fnum(a) + '%' : '–'}</td><td class="num ${df == null ? '' : df >= 0 ? 'pos' : 'neg'}">${df == null ? '–' : (df >= 0 ? '+' : '') + fnum(df)}</td></tr>`; }).join('')}</tbody></table>
       <p class="muted" style="font-size:12px;margin-bottom:0">Category average is across ${d.group_size} ${esc(f.option)} ${esc(f.plan)} plans in ${esc(f.sub_category)}.</p></section>
     <section class="panel card"><h2>Scheme details</h2><div class="kv">
-      ${kv('Fund house', esc(f.amc))}${kv('Fund manager' + (det.manager.length > 1 ? 's' : ''), esc(det.manager.join(', ')) + ` <span class="muted">(since ${det.manager_since})</span>`)}${kv('Launch date', new Date(det.launch).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }))}
-      ${kv('Benchmark', esc(f.benchmark))}${kv('Exit load', f.exit_load ? `${fnum(f.exit_load)}% if redeemed within ${det.exit_load_days} days` : 'Nil')}${kv('Lock-in', f.lock_in ? f.lock_in + ' years' : 'None')}
-      ${kv('Minimum SIP / lumpsum', `₹${fnum(f.min_sip, 0)} / ₹${fnum(f.min_lumpsum, 0)}`)}${kv('Holdings', `${f.num_holdings} (top 10 = ${fnum(f.top10_pct, 1)}%)`)}</div>
+      ${kv('Fund house', esc(f.amc))}${kv('Fund manager' + (det.manager.length > 1 ? 's' : ''), det.manager.length ? esc(det.manager.join(', ')) + (det.manager_since ? ` <span class="muted">(since ${det.manager_since})</span>` : '') : '<span class="muted">Not available</span>')}${kv(det.launch ? 'Launch date' : 'NAV history', det.launch ? new Date(det.launch).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : `${fnum(f.age, 1)} yrs on record`)}
+      ${kv('Benchmark', esc(f.benchmark))}${kv('Exit load', f.exit_load == null ? '<span class="muted">Not available</span>' : f.exit_load ? `${fnum(f.exit_load)}%${det.exit_load_days ? ` if redeemed within ${det.exit_load_days} days` : ''}` : 'Nil')}${kv('Lock-in', f.lock_in ? f.lock_in + ' years' : 'None')}
+      ${kv('Minimum SIP / lumpsum', f.min_sip == null && f.min_lumpsum == null ? '<span class="muted">Not available</span>' : `₹${fnum(f.min_sip, 0)} / ₹${fnum(f.min_lumpsum, 0)}`)}${f.num_holdings != null ? kv('Holdings', `${f.num_holdings} (top 10 = ${fnum(f.top10_pct, 1)}%)`) : ''}</div>
       <p class="muted" style="font-size:12px;margin-bottom:0"><b>Tax:</b> ${esc(d.tax)}</p></section></div>
   <section class="panel card" style="margin-bottom:18px"><h2>Risk &amp; ratios</h2><div class="mgrid">${keyM.map(k => { const m = M.by[k]; return `<div class="mcell" title="${esc(m.desc)}"><small>${esc(m.label)}</small><b class="${m.better && k === 'alpha' ? (f[k] >= 0 ? 'pos' : 'neg') : ''}">${V(k)}</b><div class="cmp">Category avg ${avg[k] != null ? fnum(avg[k], m.dec) : '–'}</div>${rk[k] != null ? `<div class="rk">Better than ${rk[k]}% of peers</div>` : ''}</div>`; }).join('') || '<div class="muted">Needs at least 1 year of history.</div>'}</div></section>
   <div class="grid2">
-    <section class="panel card"><h2>Portfolio</h2><div class="muted">Asset allocation</div>${stack(alloc)}
+    <section class="panel card"><h2>Portfolio</h2>${alloc.length ? `<div class="muted">Asset allocation</div>${stack(alloc)}` : '<p class="muted">Portfolio composition is not available for this fund yet.</p>'}
       ${caps.length ? `<div class="muted" style="margin-top:10px">Market-cap split (of equity)</div>${stack(caps)}` : ''}
       <div class="kv" style="margin-top:12px">${[['pe', 'PE'], ['pb', 'PB'], ['ytm', 'Yield to maturity'], ['mod_duration', 'Modified duration'], ['avg_maturity', 'Avg. maturity']].filter(([k]) => f[k] != null).map(([k, l]) => kv(l, V(k) + (M.by[k].unit === 'Years' ? ' yrs' : ''))).join('')}</div>
-      <h3 style="margin:16px 0 6px;font-size:16px">Sector / issuer mix</h3>${det.sectors.map(s => `<div class="bar-row"><span>${esc(s.sector)}</span><div class="bar"><i style="width:${s.weight / maxSec * 100}%"></i></div><span class="num">${fnum(s.weight, 1)}%</span></div>`).join('')}</section>
-    <section class="panel card"><h2>Top holdings</h2><table class="t" style="min-width:0"><thead><tr><th>Name</th><th>Sector</th><th class="num">Weight</th></tr></thead><tbody>${det.holdings.map(h => `<tr><td>${esc(h.name)}</td><td class="muted">${esc(h.sector)}</td><td class="num">${fnum(h.weight)}%</td></tr>`).join('')}</tbody></table></section></div>
+      ${det.sectors.length ? '<h3 style="margin:16px 0 6px;font-size:16px">Sector / issuer mix</h3>' : ''}${det.sectors.map(s => `<div class="bar-row"><span>${esc(s.sector)}</span><div class="bar"><i style="width:${s.weight / maxSec * 100}%"></i></div><span class="num">${fnum(s.weight, 1)}%</span></div>`).join('')}</section>
+    <section class="panel card"><h2>Top holdings</h2><table class="t" style="min-width:0"><thead><tr><th>Name</th><th>Sector</th><th class="num">Weight</th></tr></thead><tbody>${det.holdings.map(h => `<tr><td>${esc(h.name)}</td><td class="muted">${esc(h.sector)}</td><td class="num">${fnum(h.weight)}%</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Holdings are not available for this fund yet.</td></tr>'}</tbody></table></section></div>
   <section class="panel card" style="margin-bottom:18px"><h2>Returns calculator</h2>
     <div class="calc-form"><div class="seg" role="group" aria-label="Mode"><button data-m="sip" class="on">Monthly SIP</button><button data-m="lumpsum">Lumpsum</button></div>
       <label>Amount (₹)<input class="field" id="camt" type="number" min="100" step="100" value="10000" style="width:130px"></label>
@@ -493,29 +491,52 @@ async function pageCompare(arg, tok = ROUTE) {
 async function pageScreens(tok = ROUTE) {
   const list = await J('/screens');
   if (tok !== ROUTE) return;
+  const byId = Object.fromEntries(list.map(s => [s.id, s]));
+  const local = !Data.cloud() && typeof Auth !== 'undefined' && Auth.enabled;
   const card = s => `<div class="panel scard"><div><span class="pill ${s.preset ? 'accent' : ''}">${s.preset ? 'Preset' : 'Mine'}</span></div><h3>${esc(s.name)}</h3><div class="muted">${esc(s.note) || '—'}</div>
     <div class="muted" style="font-size:12px">${(s.config.filters || []).length} filters · sorted by ${esc(metric(s.config.sort_key)?.label || s.config.sort_key)}</div>
     <div class="row"><a class="btn primary sm" href="#/screen/${esc(s.id)}">Open</a><button class="btn sm" data-copy="${esc(s.id)}">Copy link</button>${s.mine ? `<button class="btn sm danger" data-del="${esc(s.id)}">Delete</button>` : ''}</div></div>`;
   const mine = list.filter(s => !s.preset), pre = list.filter(s => s.preset);
   $('#app').innerHTML = `<div class="page-head"><div><div class="hello">${greeting()} :)</div><h1>Saved screens</h1></div><button class="btn primary" id="nsc">+ New screen</button></div>
-    <h2 style="margin:8px 0 12px">My screens</h2>${mine.length ? `<div class="screens-grid">${mine.map(card).join('')}</div>` : '<div class="panel empty"><p>You have no saved screens yet. Build one in the screener and press <b>Save screen</b>.</p></div>'}
+    <h2 style="margin:8px 0 12px">My screens</h2>${local ? '<p class="muted" style="margin-top:-6px">Saved in this browser only. <a href="#/login"><b>Log in</b></a> to keep them on every device.</p>' : ''}${mine.length ? `<div class="screens-grid">${mine.map(card).join('')}</div>` : '<div class="panel empty"><p>You have no saved screens yet. Build one in the screener and press <b>Save screen</b>.</p></div>'}
     <h2 style="margin:26px 0 12px">Starter screens</h2><div class="screens-grid">${pre.map(card).join('')}</div>`;
   $('#nsc').onclick = () => { resetScreen(); location.hash = '#/'; };
   $('#app').onclick = async e => {
     const c = e.target.closest('[data-copy]'), x = e.target.closest('[data-del]');
-    if (c) { const u = `${location.origin}/#/screen/${c.dataset.copy}`; try { await navigator.clipboard.writeText(u); toast('Link copied'); } catch { prompt('Copy this link', u); } }
+    if (c) { const u = Data.shareUrl(byId[c.dataset.copy]); try { await navigator.clipboard.writeText(u); toast('Link copied'); } catch { prompt('Copy this link', u); } }
     if (x && confirm('Delete this screen?')) { try { await api('/screens/' + x.dataset.del, { method: 'DELETE' }); if (S.screenId === x.dataset.del) resetScreen(); toast('Deleted'); pageScreens(); } catch (er) { toast(er.message); } }
   };
 }
 
 /* ---------- boot */
+/* login / logout: switch between browser storage and the account, moving anything saved in this browser into the account once */
+window.addEventListener('fx-auth', async () => {
+  if (!M) return;
+  try {
+    const n = await Data.syncAfterLogin();
+    if (n.screens || n.watch) toast(`Moved ${n.screens} saved screen${n.screens === 1 ? '' : 's'} and ${n.watch} watchlist fund${n.watch === 1 ? '' : 's'} into your account`, 5000);
+    else await Data.refreshWatch();
+  } catch (e) { toast('Could not load your saved items: ' + e.message, 5000); }
+  WATCH = new Set(Data.watchIds());
+  const hadScreen = !!S.screenId; S.screenId = null; S.mine = false;
+  if (/^#\/(login|signup|verify|forgot)/.test(location.hash)) return;
+  if ($('#tbl') && !hadScreen) {                                  // screener already open: refresh in place so we never steal focus from a field being typed in
+    if (!$('#panel').contains(document.activeElement)) renderPanel();
+    loadResults();
+  } else route();
+});
+
 (async function boot() {
   const th = store.get('fs_theme', null); if (th) document.documentElement.dataset.theme = th;
   $('#theme').onclick = () => { const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); const nx = cur === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = nx; store.set('fs_theme', nx); };
   try {
-    M = await J('/meta'); M.by = Object.fromEntries(M.metrics.map(m => [m.key, m]));
+    await Data.init();
+    M = await J('/meta'); M.by = Object.assign(Object.create(null), Object.fromEntries(M.metrics.map(m => [m.key, m])));
     try { (await J('/watchlist')).ids.forEach(i => WATCH.add(i)); } catch { /* ignore */ }
-    if (M.source === 'demo') { const d = $('#demo'); d.classList.remove('hidden'); d.textContent = `Demo dataset: fund houses, NAVs and holdings are generated for illustration (NAV as of ${M.as_of}). Not real market data and not investment advice.`; }
+    const d = $('#demo'); d.classList.remove('hidden');
+    d.textContent = M.source === 'demo' ? `Demo dataset: fund houses, NAVs and holdings are generated for illustration (NAV as of ${M.as_of}). Not real market data and not investment advice.`
+      : `Source: AMFI NAV data as of ${M.as_of}. Returns, risk and ratios are computed by Fundrix N18 from NAV history${M.has_aum ? '' : '; AUM, expense ratio and holdings are not included yet'}. Not investment advice.`;
+    resetScreen();
     route();
-  } catch (e) { $('#app').innerHTML = `<div class="panel empty"><h3>Cannot reach the API</h3><p>${esc(e.message)}</p></div>`; }
+  } catch (e) { $('#app').innerHTML = `<div class="panel empty"><h3>Could not load the fund data</h3><p>${esc(e.message)}</p></div>`; }
 })();

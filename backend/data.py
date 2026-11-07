@@ -307,12 +307,12 @@ def generate(seed=7, today=None):
     return dict(funds=funds, details=details, navs=navs, dates=[d.isoformat() for d in dates], as_of=end.isoformat())
 
 
-def build_db(path, **kw):
+def write_db(d, path):
+    """Persist a generate() result as the SQLite file used by the (dev/test) API server."""
     import os
     if os.path.exists(path):
         os.remove(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    d = generate(**kw)
     con = sqlite3.connect(path)
     con.executescript(open(os.path.join(os.path.dirname(__file__), "schema.sql")).read())
     con.executemany("INSERT INTO funds(id, doc, detail, nav) VALUES (?,?,?,?)",
@@ -324,6 +324,10 @@ def build_db(path, **kw):
     con.commit()
     con.close()
     return len(d["funds"])
+
+
+def build_db(path, **kw):
+    return write_db(generate(**kw), path)
 
 
 if __name__ == "__main__":

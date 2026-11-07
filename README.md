@@ -4,9 +4,9 @@ An original implementation of the workflow found in Tickertape's *Mutual Fund Sc
 with 50+ metrics, sort and page the results, save and share screens, build custom filters, export, and drill into a fund.
 No code, data, text or branding was copied from Tickertape; this is a clean-room rebuild from observable behaviour.
 
-> **Data honesty.** The bundled dataset is **generated** (fictional fund houses, synthetic NAV paths). Every return, risk and
-> ratio *is* computed from those NAV series with real formulas, so the app behaves like the real thing — but the numbers describe
-> nothing in the real market. To use real NAVs see *Real data* below. Not investment advice.
+> **Data honesty.** Demo mode uses a **generated** dataset (fictional fund houses, synthetic NAVs). Real mode (`pipeline/`) uses AMFI NAVs. Either way every return, risk and
+> ratio is computed from the NAV series with real formulas; in demo mode the numbers describe
+> nothing in the real market. See docs/DEPLOY.md to switch to real data. Not investment advice.
 
 ## 1. Reverse-engineering notes (what was analysed and how)
 
@@ -21,13 +21,13 @@ equivalent was used: the rendered DOM of `/screener/mutual-fund`, public help/bl
 | **Fund page** | Scheme info (AUM, exit load, lock-in, min SIP/lumpsum), returns, key ratios (Sharpe, alpha/beta, tracking error, volatility, YTM), manager, tax, peer comparison (1Y, 3Y CAGR, expense ratio). |
 | **Stack signals** | Server-rendered React/Next-style front-end over a JSON API (no inspectable native code). |
 
-## 2. Implementation plan → stack chosen
+## 2. Architecture (final)
 
-* **Backend – Python 3.10+, FastAPI, SQLite, NumPy.** Fund table (1.6 k rows) is held in memory for instant filtering; SQLite persists funds, saved screens, watchlists.
-  Custom filters are parsed with `ast` against a whitelist (never `eval`).
-* **Frontend – vanilla JS + CSS, no build step, hand-written SVG charts.** One `pip install`, works offline, nothing to compile.
-* **Analytics – `backend/data.py::compute_metrics`.** Returns, CAGR, rolling returns, σ, Sharpe, Sortino, beta, alpha, tracking error, information ratio, up/down capture, max drawdown, Treynor, Calmar from weekly NAV vs. benchmark.
-* **Tests – pytest (API, 44) + Playwright/Chromium (browser, 27) + ingestion (2).**
+* **Static site on Cloudflare Pages** – `frontend/` is plain HTML/CSS/JS with no build step. All filtering, sorting, custom formulas, fund pages, the SIP calculator and CSV export run **in the browser** (`frontend/engine.js`) on JSON files.
+* **Daily data build on GitHub Actions** – `pipeline/` downloads AMFI's NAV file, keeps a weekly NAV history, computes returns / risk / ratios (`backend/data.py::compute_metrics`) and writes `frontend/data/*.json`.
+* **Supabase** – login (email OTP, phone + email + password, forgot password) via an Edge Function, plus per-user saved screens and watchlists protected by Row Level Security. Logged-out users keep screens in the browser, and they are moved into the account on login.
+* **`backend/` (FastAPI)** is no longer deployed. It remains as the reference implementation: `tests/test_parity.py` requires the browser engine to give identical answers.
+* See **`docs/DEPLOY.md`** for the step-by-step deployment.
 
 ## 3. Feature matrix
 
@@ -45,30 +45,29 @@ equivalent was used: the rendered DOM of `/screener/mutual-fund`, public help/bl
 | SIP / lumpsum returns calculator (XIRR) on real NAV history | ✅ |
 | Compare up to 4 funds: rebased growth chart + best-value highlighting | ✅ |
 | Light/dark theme, responsive layout, keyboard-accessible controls | ✅ |
+| Accounts: sign up with phone + email + password, 6-digit email OTP, forgot password, log in with email **or** phone (see `supabase/README.md`) | ✅ built, tested against a local Supabase mock; not yet run against a live project |
 | Real-data loader (mfapi.in) | ⚠️ implemented, parsing unit-tested offline; live fetch not exercised in the build sandbox |
 
 Not built (not observable without an account / out of scope): user accounts & auth, live data feeds, portfolio import.
 Screens and watchlists are **anonymous** (keyed by a random id in `localStorage`); anyone holding a screen id can *read* it (that is the share link), only its creator can edit/delete. There is no real authentication.
 
-## 4. Setup
-
+## 4. Run it locally
 ```bash
-cd fundrix-n18
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn backend.main:app --reload --port 8000           # first start generates data/funds.db (~10 s)
-# open http://localhost:8000
+python -m pipeline.build --mode demo --out frontend/data       # demo dataset (instant); or --mode real, see docs/DEPLOY.md
+python -m http.server 8000 -d frontend                          # open http://localhost:8000
 ```
-Regenerate demo data: `python -m backend.data data/funds.db` · Different location: `FUNDRIX_DB=/path/funds.db`.
+Accounts need Supabase settings in `frontend/config.js` (see `supabase/README.md`); without them the site runs fully, minus login.
 
 ### Tests
 ```bash
-pytest tests/test_api.py tests/test_ingest.py            # fast, no browser
+pytest tests/test_api.py tests/test_ingest.py tests/test_pipeline.py tests/test_parity.py tests/test_deploy_files.py   # fast, no browser
+node --test tests/gateway.test.mjs                        # account gateway unit tests
 pip install playwright && playwright install chromium
 pytest                                                    # + browser end-to-end suite (~45 s)
 ```
 
-### Real data
+### Real data (older, mfapi.in-based loader for the dev API; the production pipeline is `pipeline/`)
 ```bash
 python -m backend.ingest_real --out data/funds.db --limit 300 --match "flexi cap|mid cap|elss"
 python -m backend.ingest_real --out data/funds.db --extras extras.csv   # add AUM / expense ratio / exit load you compiled
@@ -91,8 +90,12 @@ Real NAV history gives real returns and risk metrics. AUM, expense ratio, exit l
 
 ## 6. Layout
 ```
-backend/  main.py (API) · data.py (analytics + demo universe) · metrics.py (registry) · expr.py (safe formulas) · ingest_real.py · schema.sql
-frontend/ index.html · style.css · app.js
-tests/    test_api.py · test_ingest.py · test_e2e.py
+pipeline/ amfi.py (parser) · state.py (history) · build.py (static data) · requirements.txt
+docs/     DEPLOY.md
+.github/workflows/deploy.yml
+backend/  main.py (reference API, not deployed) · data.py (analytics + demo universe) · metrics.py (registry) · expr.py (safe formulas) · ingest_real.py · schema.sql
+frontend/ index.html · style.css · app.js · engine.js · data.js · auth.js · config.js · _headers
+supabase/ schema.sql · functions/gateway (logic.js, handler.js, index.ts) · README.md
+tests/    test_api.py · test_ingest.py · test_e2e.py · test_auth_e2e.py · gateway.test.mjs · mock_supabase.mjs
 ```
 To add a metric: add a row in `metrics.py`, compute it in `data.py` — filters, columns, sorting, export, compare and the custom-filter language pick it up automatically.

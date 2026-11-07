@@ -1,6 +1,6 @@
 """Browser end-to-end tests (Playwright + Chromium). Skipped automatically if Playwright is not installed.
 Run:  pip install playwright && playwright install chromium && pytest tests/test_e2e.py"""
-import os, socket, subprocess, sys, tempfile, time, urllib.request
+import json, os, socket, subprocess, sys, tempfile, time, urllib.request
 import pytest
 
 pw = pytest.importorskip("playwright.sync_api")
@@ -136,7 +136,7 @@ def test_custom_filter(page):
     assert "Ret per risk" not in page.inner_text("table.t thead")
 
 
-@pytest.mark.parametrize("expr,msg", [("__import__('os')", "may be called"), ("nope + 1", "Unknown metric"), ("cagr_3y +", "Syntax"), ("", "empty")])
+@pytest.mark.parametrize("expr,msg", [("__import__('os')", "unexpected"), ("nope + 1", "Unknown metric"), ("cagr_3y +", "Syntax"), ("", "empty")])
 def test_custom_filter_errors(page, expr, msg):
     page.click("[data-a=custom]"); page.fill("#cname", "bad"); page.fill("#cexpr", expr); page.click("#cadd")
     page.wait_for_selector("#cmsg.err"); assert msg.lower() in page.inner_text("#cmsg").lower()
@@ -220,23 +220,66 @@ def test_fund_page(page):
 
 
 def test_save_share_and_xss(page, browser):
+    """Logged-out users: screens live in this browser; the share link carries the whole screen inside the URL."""
     evil = '<img src=x onerror="window.__xss=1">'
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
     page.fill("#sname", evil); page.fill("#snote", "<script>window.__xss=2</script>")
     page.fill('.fcard[data-key="aum"] .nmin', "2000"); settle(page); t = total(page)
-    page.click("#bSave"); page.wait_for_selector("#bShare"); assert "#/screen/" in page.url
-    sid = page.url.split("/screen/")[1]
-    assert page.input_value("#sname") == evil
-    with page.expect_response(lambda r: r.request.method == "PUT" and "/api/screens/" in r.url) as rs: page.click("#bSave")   # update in place
-    assert rs.value.ok
-    page.wait_for_selector("#bShare")
+    page.click("#bSave"); page.wait_for_selector("#bShare"); assert "#/screen/l_" in page.url
+    sid = page.url.split("/screen/")[1]; assert page.input_value("#sname") == evil
+    assert "this browser" in page.inner_text(".toast")
+    page.fill("#snote", "updated"); page.click("#bSave"); page.wait_for_selector(".toast")                       # update in place, not a duplicate
+    saved = json.loads(page.evaluate("localStorage.fx_screens")); assert len(saved) == 1 and saved[0]["note"] == "updated" and saved[0]["id"] == sid
     page.goto(page.base + "/#/screens"); page.wait_for_selector(".scard")
-    assert page.evaluate("window.__xss") is None and page.locator(".scard img").count() == 0
-    assert evil in page.inner_text("#app")                                                 # shown as text
-    # a different browser profile can open the shared link but cannot edit it
-    ctx2 = browser.new_context(); p2 = ctx2.new_page(); p2.goto(page.base + f"/#/screen/{sid}"); p2.wait_for_selector("table.t tbody tr")
-    assert total(p2) == t and p2.locator("#bSaveNew").count() == 0 and "Save screen" in p2.inner_text("#bSave")
+    assert page.evaluate("window.__xss") is None and page.locator(".scard img").count() == 0 and evil in page.inner_text("#app")
+    page.locator("[data-copy]").first.click(); link = page.evaluate("navigator.clipboard.readText()"); assert "#/s/" in link
+    ctx2 = browser.new_context(); p2 = ctx2.new_page(); p2.goto(link); p2.wait_for_selector("table.t tbody tr")      # a stranger's browser, nothing stored there
+    assert total(p2) == t and p2.input_value("#sname") == evil and p2.locator("#bSaveNew").count() == 0 and p2.evaluate("window.__xss") is None
     ctx2.close()
     page.once("dialog", lambda d: d.accept()); page.click(f'[data-del="{sid}"]'); page.wait_for_selector("text=no saved screens")
+    assert json.loads(page.evaluate("localStorage.fx_screens")) == []
+
+
+def test_share_link_is_untrusted_input(page):
+    import base64
+    def link(obj): return page.base + "/#/s/" + base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+    cfg = {"filters": [{"key": "__proto__", "min": 1}, {"key": "nope", "values": ["x"]}, {"key": "cagr_3y", "min": 10}, {"key": "aum", "min": "evil"}],
+           "custom": [{"name": "<b>", "expr": "aum"}, {"name": "ok", "expr": "__import__('os')"}], "sort_key": "zzz", "extra_cols": ["beta", "nope"], "universe": "ids", "search": "x" * 500}
+    page.goto(link({"n": "N" * 200, "t": "<script>window.__xss=1</script>", "c": cfg})); page.wait_for_selector("#tbl .empty, table.t tbody tr")      # the 100-x search matches nothing: fine
+    assert len(page.input_value("#sname")) == 80 and page.evaluate("window.__xss") is None
+    assert "2 filters applied" in page.inner_text(".filters-head")                                                   # only cagr_3y and aum (range dropped) survived
+    assert page.locator('.fcard[data-key="cagr_3y"]').count() == 1 and page.locator('.fcard[data-key="nope"]').count() == 0
+    assert len(page.input_value("#search")) <= 100
+    page.goto(page.base + "/#/s/%%%not-base64"); page.wait_for_selector("text=Something went wrong")
+    page.goto(page.base + "/#/s/" + "A" * 13000); page.wait_for_selector("text=too long")
+
+
+def test_whole_site_works_without_any_server_api(page):
+    """The site is static: browsing, searching, fund pages, compare and export never call an /api server."""
+    calls = []; page.on("request", lambda r: calls.append(r.url) if "/api/" in r.url else None)
+    page.fill("#search", "mid"); settle(page); page.locator("td.name a").first.click(); page.wait_for_selector("#navchart svg"); page.wait_for_selector("#cres .strip")
+    page.goto(page.base + "/#/compare/160,161"); page.wait_for_selector(".cmp-table table")
+    page.goto(page.base + "/#/"); page.wait_for_selector("table.t tbody tr")
+    with page.expect_download(): page.click("#bExport")
+    assert calls == [], calls
+
+
+def test_watchlist_and_compare_persist_in_the_browser(page):
+    first = page.locator("td.name a").first.inner_text(); page.locator("[data-star]").first.click(); page.wait_for_selector(".toast")
+    page.locator("input.cmp").nth(0).check(); page.locator("input.cmp").nth(1).check()
+    page.reload(); page.wait_for_selector("table.t tbody tr")
+    assert page.locator("[data-star]").first.get_attribute("aria-pressed") == "true" and page.inner_text("#cmpBadge") == "2"
+    page.select_option("#univ", "watchlist"); settle(page); assert page.locator("td.name a").first.inner_text() == first
+
+
+def test_navigating_away_while_fund_page_loads_is_safe(page):
+    held = []
+    page.route("**/data/nav/*", lambda r: held.append(r))                                  # keep the NAV download pending
+    page.evaluate("location.hash = '#/fund/160'"); page.wait_for_timeout(300); assert held
+    page.evaluate("location.hash = '#/screens'"); page.wait_for_selector(".scard")
+    for r in held: r.continue_()
+    page.wait_for_timeout(800)
+    assert page.locator(".scard").count() >= 5 and page.locator("#navchart").count() == 0   # screens page not overwritten, no JS error (fixture checks)
 
 
 def test_presets_open(page):
@@ -268,16 +311,6 @@ def test_mobile_layout(browser, base):
     assert errs == []; ctx.close()
 
 
-def test_navigating_away_during_save_is_not_overwritten(page):
-    held = []
-    page.route("**/api/screens", lambda r: held.append(r) if r.request.method == "POST" else r.continue_())
-    page.fill("#sname", "race"); page.click("#bSave"); page.wait_for_timeout(200)
-    assert held, "POST should be pending"
-    page.evaluate("location.hash = '#/screens'"); page.wait_for_selector(".scard")
-    held[0].continue_(); page.wait_for_timeout(1200)                       # the save now completes while we are elsewhere
-    assert page.locator("#bSave").count() == 0 and page.locator(".scard").count() >= 5
-
-
 def test_mobile_filter_toggle(browser, base):
     ctx = browser.new_context(viewport={"width": 390, "height": 800}); pg = ctx.new_page(); pg.goto(base + "/"); pg.wait_for_selector("table.t tbody tr")
     assert not pg.locator("#panel").is_visible() and pg.locator("#bFilt").is_visible()
@@ -290,3 +323,5 @@ def test_add_filter_modal_footer_per_tab(page):
     page.click("[data-a=add]"); assert not page.locator("#cadd").is_visible()
     page.click('[data-t="custom"]'); assert page.locator("#cadd").is_visible() and page.locator("#cval").is_visible()
     page.click('[data-t="metrics"]'); assert not page.locator("#cadd").is_visible()
+
+

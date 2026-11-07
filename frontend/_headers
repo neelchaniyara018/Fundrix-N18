@@ -1,0 +1,19 @@
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+
+/data/meta.json
+  Cache-Control: no-cache
+
+/data/funds.json
+  Cache-Control: public, max-age=86400
+/data/dates.json
+  Cache-Control: public, max-age=86400
+/data/metrics.json
+  Cache-Control: public, max-age=86400
+/data/presets.json
+  Cache-Control: public, max-age=86400
+/data/nav/*
+  Cache-Control: public, max-age=86400
