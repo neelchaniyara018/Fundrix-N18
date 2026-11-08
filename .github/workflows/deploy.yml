@@ -1,0 +1,104 @@
+name: Update data and deploy to Cloudflare Pages
+
+on:
+  schedule:
+    - cron: "30 1 * * *"          # 01:30 UTC = 07:00 IST, after AMFI has published the previous evening's NAVs
+  workflow_dispatch:
+    inputs:
+      backfill_weeks:
+        description: "Weeks of NAV history to download from AMFI (use 530 ONCE for the first run, then 0)"
+        default: "0"
+  push:
+    branches: [main]
+    paths: ["frontend/**", "pipeline/**", "backend/**", "data/extras.csv", ".github/workflows/deploy.yml"]
+
+concurrency:
+  group: fundrix-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: write                  # only used to push the `data` branch (saved NAV history + built site data)
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      PROJECT: ${{ vars.CF_PAGES_PROJECT || 'fundrix-n18' }}
+      REFRESH: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load saved state (data branch)
+        uses: actions/checkout@v4
+        continue-on-error: true         # the branch does not exist before the first run
+        with:
+          ref: data
+          path: state
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+      - run: pip install -r pipeline/requirements.txt
+
+      - name: Build fund data
+        id: build
+        run: |
+          mkdir -p state frontend/data
+          if [ "$REFRESH" = "true" ]; then
+            python -m pipeline.build --mode real --state state --out frontend/data \
+              --extras data/extras.csv --backfill-weeks "${{ inputs.backfill_weeks || '0' }}"
+          elif [ -f state/site-data/meta.json ]; then
+            echo "Code-only change: re-using the last built data"
+            cp -r state/site-data/. frontend/data/
+          else
+            echo "No real data built yet: publishing the DEMO dataset so the site works"
+            python -m pipeline.build --mode demo --out frontend/data
+          fi
+
+      - name: Write public settings (frontend/config.js)
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os
+          if os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_ANON_KEY"):
+              cfg = dict(supabaseUrl=os.environ["SUPABASE_URL"].strip().rstrip("/"), anonKey=os.environ["SUPABASE_ANON_KEY"].strip(),
+                         turnstileSiteKey=os.environ.get("TURNSTILE_SITE_KEY", "").strip())
+              open("frontend/config.js", "w").write("window.FUNDRIX_CONFIG = " + json.dumps(cfg) + ";\n")
+              print("config.js written from repository variables")
+          else:
+              print("SUPABASE_URL / SUPABASE_ANON_KEY variables not set: keeping frontend/config.js as committed")
+          PY
+
+      - name: Save state for tomorrow (single-commit data branch)
+        if: ${{ env.REFRESH == 'true' && steps.build.outcome == 'success' }}
+        run: |
+          rm -rf /tmp/out && mkdir -p /tmp/out/site-data
+          cp state/state.json.gz /tmp/out/
+          cp -r frontend/data/. /tmp/out/site-data/
+          cd /tmp/out
+          git init -q -b data
+          git config user.name "fundrix-bot" && git config user.email "fundrix-bot@users.noreply.github.com"
+          git add -A && git commit -q -m "data $(date -u +%F)"
+          git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" data
+
+      - name: Create the Pages project (first run only; ignored if it exists)
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages project create ${{ env.PROJECT }} --production-branch=main
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy frontend --project-name=${{ env.PROJECT }} --branch=main --commit-dirty=true
