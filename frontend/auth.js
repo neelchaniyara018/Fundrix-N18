@@ -9,6 +9,8 @@ const Auth = (() => {
   let session = null, tsToken = null;
   try { session = JSON.parse(localStorage.getItem(KEY)); } catch { session = null; }
 
+  const back = () => (typeof Gate !== 'undefined' ? Gate.returnHash() : '#/');           // return to the page the visitor was trying to use
+
   /* ----- validation (mirrors supabase/functions/gateway/logic.js; the server re-checks everything) */
   function normPhone(raw) {
     let d = String(raw || '').replace(/[\s\-().]/g, '');
@@ -127,7 +129,7 @@ const Auth = (() => {
       ev.preventDefault(); const id = $('#lid').value.trim(), pw = $('#lpw').value, btn = $('#lbtn'); setErr('lform', '');
       setErr('lid', id ? '' : 'Enter your email or phone number.'); setErr('lpw', pw ? '' : 'Enter your password.'); if (!id || !pw) return;
       busy(btn, true); const r = await gateway({ action: 'login', identifier: id, password: pw }); busy(btn, false, 'Log in');
-      if (r.ok && r.data.session) { setSession(r.data.session); setPending(null); toast('Welcome back'); location.hash = '#/'; return; }
+      if (r.ok && r.data.session) { setSession(r.data.session); setPending(null); toast('Welcome back'); location.hash = back(); return; }
       const er = r.data.error;
       if (er === 'email_not_confirmed') { setPending({ email: r.data.email, note: 'Please verify your email first. We sent you a code.' }); post('/auth/v1/resend', { type: 'signup', email: r.data.email }); location.hash = '#/verify'; return; }
       setErr('lform', er === 'invalid_credentials' ? 'Wrong email/phone or password. If you have not verified your email yet, log in with your email address to get a new code.'
@@ -220,7 +222,7 @@ const Auth = (() => {
       setErr('rcode', /^\d{6}$/.test(code) ? '' : 'Enter the 6-digit code.'); setErr('rpw', pwProblem(pw)); setErr('rpw2', pw === pw2 ? '' : 'Passwords do not match.');
       if (!/^\d{6}$/.test(code) || pwProblem(pw) || pw !== pw2) return;
       const btn = $('#rbtn'); busy(btn, true); const r = await gateway({ action: 'reset', identifier: st.identifier, code, password: pw }); busy(btn, false, 'Update password');
-      if (r.ok && r.data.session) { setResetState(null); setPending(null); setSession(r.data.session); toast('Password updated. You are logged in.'); location.hash = '#/'; return; }
+      if (r.ok && r.data.session) { setResetState(null); setPending(null); setSession(r.data.session); toast('Password updated. You are logged in.'); location.hash = back(); return; }
       const er = r.data.error;
       if (er === 'invalid_code') setErr('rcode', 'That code is wrong or has expired. Check the latest email or resend a code.');
       else if (er === 'validation') { const f = r.data.fields || {}; if (f.code) setErr('rcode', f.code); if (f.password) setErr('rpw', f.password); if (f.identifier) setErr('rform', f.identifier); }
@@ -259,7 +261,7 @@ const Auth = (() => {
       if (!email) setErr('vem', em ? '' : 'Enter a valid email address.');
       setErr('vcode', /^\d{6}$/.test(code) ? '' : 'Enter the 6-digit code.'); if (!em || !/^\d{6}$/.test(code)) return;
       const btn = $('#vbtn'); busy(btn, true); const r = await post('/auth/v1/verify', { type: 'signup', email: em, token: code }); busy(btn, false, 'Verify and continue');
-      if (r.ok && r.data.access_token) { setSession(r.data); setPending(null); toast('Email verified. You are logged in.'); location.hash = '#/'; return; }
+      if (r.ok && r.data.access_token) { setSession(r.data); setPending(null); toast('Email verified. You are logged in.'); location.hash = back(); return; }
       setErr('vform', r.status === 0 ? 'Cannot reach the server. Check your connection.' : r.status === 429 ? 'Too many attempts. Please wait and try again.' : 'That code is wrong or has expired. Check the latest email or resend a new code.');
     };
     const rb = $('#resend'); const startCooldown = s => { clearInterval(cooldownTimer); let left = s; rb.disabled = true; const tick = () => { rb.textContent = left > 0 ? `Resend in ${left}s` : 'Resend code'; if (left-- <= 0) { rb.disabled = false; clearInterval(cooldownTimer); } }; tick(); cooldownTimer = setInterval(tick, 1000); };

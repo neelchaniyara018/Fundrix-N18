@@ -62,13 +62,29 @@ const reqBody = (extra = {}) => ({
 });
 const cfgOut = () => ({ universe: S.universe, filters: S.filters, custom: S.custom, sort_key: S.sort_key, sort_dir: S.sort_dir, extra_cols: S.extra_cols, search: S.search });
 
+/* ---------- sign-in gate helpers (see gate.js; with accounts disabled nothing is ever blocked) */
+const blocked = () => typeof Gate !== 'undefined' && Gate.blocked();
+const need = what => typeof Gate === 'undefined' || Gate.need(what);
+const GATED_ROUTES = { screens: 'screens', watchlist: 'watchlist', compare: 'compare', screen: 'screens', s: 'screens' };
+
+document.addEventListener('click', e => {
+  if (!blocked()) return;
+  if (e.target.closest('#panel') && !e.target.closest('a')) need('filters');
+  const l = e.target.closest('[data-lock]'); if (l) need(l.dataset.lock);
+});
+
 /* ---------- router */
 let ROUTE = 0;   // monotonically increasing; async pages bail out if a newer navigation started
 async function route() {
   const tok = ++ROUTE;
   closePops();
-  const h = location.hash.replace(/^#\/?/, '');
+  let h = location.hash.replace(/^#\/?/, '');
+  if (GATED_ROUTES[h.split('/')[0]] && blocked()) {                     // guests may not open these pages: remember the target, show the prompt, stay on the screener
+    const want = location.hash, key = GATED_ROUTES[h.split('/')[0]]; Gate.remember(want); history.replaceState(null, '', '#/'); h = '';
+    setTimeout(() => need(key), 0);
+  }
   const [r, arg] = h.split('/');
+  if (typeof Gate !== 'undefined') Gate.onRoute();
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.r === (r || 'screener') || (r === 'screen' && a.dataset.r === 'screener') || (r === 'fund' && a.dataset.r === 'screener')));
   const app = $('#app');
   try {
@@ -130,9 +146,9 @@ function pageScreener() {
   $('#search').oninput = debounce(e => { S.search = e.target.value; S.page = 1; loadResults(); }, 250);
   $('#bFilt').onclick = e => { const o = $('#panel').classList.toggle('open'); e.currentTarget.setAttribute('aria-expanded', o); e.currentTarget.textContent = o ? 'Filters ▴' : 'Filters ▾'; };
   $('#bNew').onclick = () => { resetScreen(); location.hash = '#/'; pageScreener(); };
-  $('#bSave').onclick = () => saveScreen(false);
-  const sn = $('#bSaveNew'); sn && (sn.onclick = () => saveScreen(true));
-  const sh = $('#bShare'); sh && (sh.onclick = async () => { const u = Data.shareUrl({ id: S.screenId, name: S.name, note: S.note, config: cfgOut() }); try { await navigator.clipboard.writeText(u); toast('Link copied'); } catch { prompt('Copy this link', u); } });
+  $('#bSave').onclick = () => { if (need('save')) saveScreen(false); };
+  const sn = $('#bSaveNew'); sn && (sn.onclick = () => { if (need('save')) saveScreen(true); });
+  const sh = $('#bShare'); sh && (sh.onclick = async () => { if (!need('save')) return; const u = Data.shareUrl({ id: S.screenId, name: S.name, note: S.note, config: cfgOut() }); try { await navigator.clipboard.writeText(u); toast('Link copied'); } catch { prompt('Copy this link', u); } });
   $('#bExport').onclick = exportCsv;
   $('#bCols').onclick = e => columnsPop(e.currentTarget);
 }
@@ -190,6 +206,7 @@ const chk = (v, sel, cnt) => `<label data-name="${esc(v.toLowerCase())}"><input 
 
 function renderPanel() {
   const p = $('#panel'); if (!p) return;
+  const lock = blocked();
   const n = S.filters.length;
   p.innerHTML = `<div class="filters-head"><b>${n} filter${n === 1 ? '' : 's'} applied</b><button class="link" data-a="resetall">Reset all</button></div>
     <div class="fcard"><div class="fh"><b>MF Universe</b></div><select class="field" id="univ" aria-label="Fund universe">
@@ -197,12 +214,17 @@ function renderPanel() {
       <option value="watchlist" ${S.universe === 'watchlist' ? 'selected' : ''}>My watchlist (${WATCH.size})</option></select></div>
     ${S.filters.map(filterCard).join('')}
     <div class="add-row"><button class="btn primary" data-a="add">+ Add filter</button><button class="btn" data-a="custom">ƒ Custom filter</button></div>`;
+  p.classList.toggle('locked', lock);
+  if (lock) {                                                    // guests: controls are inert (no clicks / keys reach them); a click on the panel opens the prompt
+    $$('.filters-head, .fcard, .add-row', p).forEach(x => x.setAttribute('inert', ''));
+    p.insertAdjacentHTML('afterbegin', '<div class="lockbar">🔒 <a href="#/login">Log in</a> or <a href="#/signup">sign up</a> to edit filters</div>');
+  }
 }
 const reload = () => { S.page = 1; loadResults(); };
 const reloadSoon = debounce(reload, 250);
 
 document.addEventListener('click', e => {
-  const b = e.target.closest('#panel [data-a]'); if (!b) return;
+  const b = e.target.closest('#panel [data-a]'); if (!b || blocked()) return;
   const card = b.closest('.fcard'), key = card && card.dataset.key, a = b.dataset.a;
   if (a === 'remove') { S.filters = S.filters.filter(f => f.key !== key); if (key.startsWith('c:')) S.custom = S.custom.filter(c => 'c:' + c.name !== key); renderPanel(); reload(); }
   else if (a === 'reset') { const f = S.filters.find(f => f.key === key); delete f.min; delete f.max; if (f.values) f.values = []; renderPanel(); reload(); }
@@ -211,7 +233,7 @@ document.addEventListener('click', e => {
   else if (a === 'custom') addFilterModal('custom');
 });
 document.addEventListener('input', e => {
-  const t = e.target, card = t.closest('#panel .fcard'); if (!card) return;
+  const t = e.target, card = t.closest('#panel .fcard'); if (!card || blocked()) return;
   const f = S.filters.find(f => f.key === card.dataset.key);
   if (t.classList.contains('csearch')) { const q = t.value.toLowerCase(); $$('label', card).forEach(l => l.classList.toggle('hidden', !l.dataset.name.includes(q))); return; }
   if (!f || !t.matches('.lo,.hi,.nmin,.nmax')) return;
@@ -228,6 +250,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target;
+  if (blocked() && t.closest('#panel')) return;
   if (t.id === 'univ') { S.universe = t.value; reload(); return; }
   const card = t.closest('#panel .fcard');
   if (card && t.classList.contains('cb')) {
@@ -328,7 +351,7 @@ function renderTable(d) {
     $('#pager').innerHTML = ''; return;
   }
   $('#tbl').innerHTML = `<table class="t"><thead><tr><th style="width:36px"></th>${th('name', `Name (${M.total.toLocaleString('en-IN')} MFs)`, '')}${cols.map(k => th(k, labelOf(k), metric(k).type === 'num' ? 'num' : '')).join('')}</tr></thead><tbody>
-    ${d.results.map((r, i) => `<tr data-id="${r.id}"><td><input type="checkbox" class="cmp" ${CMP.has(r.id) ? 'checked' : ''} aria-label="Compare ${esc(r.name)}"></td>
+    ${d.results.map((r, i) => `<tr data-id="${r.id}"><td>${blocked() ? `<button class="icon-btn lockbtn" data-lock="compare" aria-label="Sign in to compare funds" title="Sign in to compare">🔒</button>` : `<input type="checkbox" class="cmp" ${CMP.has(r.id) ? 'checked' : ''} aria-label="Compare ${esc(r.name)}">`}</td>
       <td class="name"><div class="nm"><span class="idx">${from + i + 1}.</span><a href="#/fund/${r.id}">${esc(r.name)}</a><button class="icon-btn star ${WATCH.has(r.id) ? 'on' : ''}" data-star aria-label="Toggle watchlist" aria-pressed="${WATCH.has(r.id)}">${WATCH.has(r.id) ? '★' : '☆'}</button></div><div class="sub">${esc(r.option)}</div></td>
       ${cols.map(k => { const v = r[k], m = metric(k); return m.type === 'num' ? `<td class="num ${tone(k, v)}">${cellText(k, v)}</td>` : k === 'plan' ? `<td><span class="pill">${esc(v)}</span></td>` : `<td>${esc(v ?? '–')}</td>`; }).join('')}</tr>`).join('')}</tbody></table>`;
   const P = d.pages, c = d.page, set = new Set([1, P, c, c - 1, c + 1, c - 2, c + 2].filter(n => n >= 1 && n <= P)), nums = [...set].sort((a, b) => a - b);
@@ -341,11 +364,11 @@ document.addEventListener('click', async e => {
   const sort = e.target.closest('[data-sort]');
   if (sort) { const k = sort.dataset.sort; if (S.sort_key === k) S.sort_dir = S.sort_dir === 'asc' ? 'desc' : 'asc'; else { S.sort_key = k; S.sort_dir = (k === 'name' || metric(k)?.type === 'cat') ? 'asc' : 'desc'; } S.page = 1; return loadResults(); }
   const pg = e.target.closest('#pager [data-p]'); if (pg && !pg.disabled) { S.page = +pg.dataset.p; loadResults(); return scrollTo({ top: 0, behavior: 'smooth' }); }
-  const star = e.target.closest('[data-star]'); if (star) { const id = +star.closest('tr').dataset.id; await toggleWatch(id); return; }
+  const star = e.target.closest('[data-star]'); if (star) { if (!need('watchlist')) return; const id = +star.closest('tr').dataset.id; await toggleWatch(id); return; }
 });
 document.addEventListener('change', e => {
   if (e.target.id === 'psize') { S.size = +e.target.value; reload(); }
-  if (e.target.classList.contains('cmp')) toggleCompare(+e.target.closest('tr').dataset.id, e.target);
+  if (e.target.classList.contains('cmp')) { if (!need('compare')) { e.target.checked = false; return; } } if (e.target.classList.contains('cmp')) toggleCompare(+e.target.closest('tr').dataset.id, e.target);
 });
 async function toggleWatch(id) {
   const on = !WATCH.has(id);
@@ -361,7 +384,7 @@ function toggleCompare(id, box) {
   const wb = $('#cbtn'); if (wb) wb.textContent = CMP.has(id) ? '✓ Added to compare' : '+ Compare';
 }
 function renderTray() {
-  const n = CMP.size, b = $('#cmpBadge'); b.textContent = n; b.classList.toggle('hidden', !n);
+  const n = blocked() ? 0 : CMP.size, b = $('#cmpBadge'); b.textContent = n; b.classList.toggle('hidden', !n);
   $('#tray').innerHTML = n && !location.hash.startsWith('#/compare') ? `<div class="tray" role="region" aria-label="Compare tray"><span>${n} selected</span><button class="btn primary sm" data-go ${n < 2 ? 'disabled' : ''}>Compare ${n < 2 ? '(pick 1 more)' : ''}</button><button class="btn sm" data-clear>Clear</button></div>` : '';
 }
 $('#tray').addEventListener('click', e => {
@@ -436,7 +459,7 @@ async function pageFund(id, tok = ROUTE) {
       <label>Amount (₹)<input class="field" id="camt" type="number" min="100" step="100" value="10000" style="width:130px"></label>
       <label>Period<select class="field" id="cyrs"></select></label></div><div id="cres"></div></section>
   <section class="panel card"><h2>Peers in ${esc(f.sub_category)}</h2>${d.peers.length ? `<div class="tablewrap"><table class="t"><thead><tr><th>Fund</th><th class="num">AUM (Cr)</th><th class="num">1Y (%)</th><th class="num">3Y CAGR (%)</th><th class="num">5Y CAGR (%)</th><th class="num">Expense (%)</th><th class="num">Sharpe</th></tr></thead><tbody>${d.peers.map(p => `<tr><td><a href="#/fund/${p.id}"><b>${esc(p.name)}</b></a></td><td class="num">${fnum(p.aum)}</td><td class="num ${tone('ret_1y', p.ret_1y)}">${fnum(p.ret_1y)}</td><td class="num ${tone('cagr_3y', p.cagr_3y)}">${fnum(p.cagr_3y)}</td><td class="num ${tone('cagr_5y', p.cagr_5y)}">${fnum(p.cagr_5y)}</td><td class="num">${fnum(p.expense_ratio)}</td><td class="num">${fnum(p.sharpe)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="muted">No peers.</div>'}</section>`;
-  $('#wbtn').onclick = () => toggleWatch(id); $('#cbtn').onclick = () => toggleCompare(id);
+  $('#wbtn').onclick = () => { if (need('watchlist')) toggleWatch(id); }; $('#cbtn').onclick = () => { if (need('compare')) toggleCompare(id); };
   // NAV chart with range buttons
   const R = [['1M', 4], ['6M', 26], ['1Y', 52], ['3Y', 156], ['5Y', 260], ['MAX', 1e9]], N = nv.nav.length - 1;
   $('#ranges').innerHTML = R.filter(([l, w]) => w <= N || l === 'MAX').map(([l]) => `<button data-r="${l}" class="${l === (N >= 156 ? '3Y' : 'MAX') ? 'on' : ''}">${l}</button>`).join('');
@@ -517,7 +540,7 @@ window.addEventListener('fx-auth', async () => {
     if (n.screens || n.watch) toast(`Moved ${n.screens} saved screen${n.screens === 1 ? '' : 's'} and ${n.watch} watchlist fund${n.watch === 1 ? '' : 's'} into your account`, 5000);
     else await Data.refreshWatch();
   } catch (e) { toast('Could not load your saved items: ' + e.message, 5000); }
-  WATCH = new Set(Data.watchIds());
+  WATCH = new Set(Data.watchIds()); renderTray();
   const hadScreen = !!S.screenId; S.screenId = null; S.mine = false;
   if (/^#\/(login|signup|verify|forgot)/.test(location.hash)) return;
   if ($('#tbl') && !hadScreen) {                                  // screener already open: refresh in place so we never steal focus from a field being typed in
@@ -533,9 +556,13 @@ window.addEventListener('fx-auth', async () => {
     await Data.init();
     M = await J('/meta'); M.by = Object.assign(Object.create(null), Object.fromEntries(M.metrics.map(m => [m.key, m])));
     try { (await J('/watchlist')).ids.forEach(i => WATCH.add(i)); } catch { /* ignore */ }
-    const d = $('#demo'); d.classList.remove('hidden');
-    d.textContent = M.source === 'demo' ? `Demo dataset: fund houses, NAVs and holdings are generated for illustration (NAV as of ${M.as_of}). Not real market data and not investment advice.`
-      : `Source: AMFI NAV data as of ${M.as_of}. Returns, risk and ratios are computed by Fundrix N18 from NAV history${M.has_aum ? '' : '; AUM, expense ratio and holdings are not included yet'}. Not investment advice.`;
+    const demo = M.source === 'demo', asOf = new Date(M.as_of + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    const d = $('#demo');                                          // the top banner exists ONLY as a safeguard when generated demo data is being served
+    d.classList.toggle('hidden', !demo);
+    d.textContent = demo ? `Demo dataset: fund houses, NAVs and holdings are generated for illustration (NAV as of ${asOf}). Not real market data and not investment advice.` : '';
+    const f = $('#foot'); f.classList.remove('hidden');
+    f.textContent = demo ? 'Demo data. Not investment advice.'
+      : `NAV data: AMFI India, as of ${asOf}. Returns, risk and ratios are computed by Fundrix N18 from NAV history${M.has_aum ? '' : '; AUM, expense ratio and holdings are not included yet'}. For information only; not investment advice.`;
     resetScreen();
     route();
   } catch (e) { $('#app').innerHTML = `<div class="panel empty"><h3>Could not load the fund data</h3><p>${esc(e.message)}</p></div>`; }

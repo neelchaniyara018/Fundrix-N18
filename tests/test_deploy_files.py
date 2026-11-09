@@ -31,3 +31,11 @@ def test_headers_file_has_no_conflicting_duplicate_rules():
 def test_committed_config_has_no_service_role_assignment():
     c = open(os.path.join(ROOT, "frontend/config.js")).read()
     assert not re.search(r"service[_-]?role[\"']?\s*[:=]", c, re.I)                    # a comment warning against it is fine; an assignment is not
+
+
+def test_generated_demo_data_is_never_published_unless_explicitly_allowed():
+    text = open(os.path.join(ROOT, ".github/workflows/deploy.yml")).read()
+    i = text.index("--mode demo")
+    before = text[:i]
+    assert "ALLOW_DEMO_DATA" in before[before.rindex("elif"):]                        # the demo build sits behind an explicit opt-in
+    assert "No real data has been built yet" in text and "exit 1" in text.split("No real data has been built yet")[1][:300]

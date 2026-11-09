@@ -35,10 +35,12 @@ def browser():
 def mock_get(servers, path): return json.load(urllib.request.urlopen(servers["mock"] + path))
 def otp(servers, email): return mock_get(servers, "/__mock/otp?email=" + email)["code"]
 
-def new_page(browser, servers, enabled=True):
-    ctx = browser.new_context(viewport={"width": 1200, "height": 900}); pg = ctx.new_page(); pg.errors = []
+def new_page(browser, servers, enabled=True, gate=False, wall=30, viewport=None):
+    """gate=False: sign-in wall off (the default, so older tests behave as before). gate=True: wall after `wall` seconds; wall=None -> use the app's default."""
+    ctx = browser.new_context(viewport=viewport or {"width": 1200, "height": 900}); pg = ctx.new_page(); pg.errors = []
     pg.on("pageerror", lambda e: pg.errors.append(str(e)))
-    cfg = {"supabaseUrl": servers["mock"] if enabled else "", "anonKey": "anon-key" if enabled else "", "turnstileSiteKey": ""}
+    cfg = {"supabaseUrl": servers["mock"] if enabled else "", "anonKey": "anon-key" if enabled else "", "turnstileSiteKey": "", "requireLogin": bool(gate)}
+    if wall is not None: cfg["loginWallSeconds"] = wall
     pg.route("**/config.js", lambda r: r.fulfill(content_type="application/javascript", body="window.FUNDRIX_CONFIG=" + json.dumps(cfg)))
     pg.ctx, pg.servers = ctx, servers
     return pg

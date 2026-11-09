@@ -46,6 +46,7 @@ equivalent was used: the rendered DOM of `/screener/mutual-fund`, public help/bl
 | Compare up to 4 funds: rebased growth chart + best-value highlighting | ✅ |
 | Light/dark theme, responsive layout, keyboard-accessible controls | ✅ |
 | Accounts: sign up with phone + email + password, 6-digit email OTP, forgot password, log in with email **or** phone (see `supabase/README.md`) | ✅ built, tested against a local Supabase mock; not yet run against a live project |
+| **Compulsory sign-in:** 30 s free look, then an undismissable centered pop-up; filters, saved screens, compare and watchlist locked for guests (`frontend/gate.js`, see docs/DEPLOY.md) | ✅ front-end gate (static data files remain public) |
 | Real-data loader (mfapi.in) | ⚠️ implemented, parsing unit-tested offline; live fetch not exercised in the build sandbox |
 
 Not built (not observable without an account / out of scope): user accounts & auth, live data feeds, portfolio import.
@@ -94,7 +95,7 @@ pipeline/ amfi.py (parser) · state.py (history) · build.py (static data) · re
 docs/     DEPLOY.md
 .github/workflows/deploy.yml
 backend/  main.py (reference API, not deployed) · data.py (analytics + demo universe) · metrics.py (registry) · expr.py (safe formulas) · ingest_real.py · schema.sql
-frontend/ index.html · style.css · app.js · engine.js · data.js · auth.js · config.js · _headers
+frontend/ index.html · style.css · app.js · engine.js · data.js · auth.js · gate.js · config.js · _headers
 supabase/ schema.sql · functions/gateway (logic.js, handler.js, index.ts) · README.md
 tests/    test_api.py · test_ingest.py · test_e2e.py · test_auth_e2e.py · gateway.test.mjs · mock_supabase.mjs
 ```

@@ -29,11 +29,13 @@ Never commit secrets: only the public Supabase URL and `anon` key ever go in the
 | Variable | `SUPABASE_URL` | e.g. `https://abcd1234.supabase.co` |
 | Variable | `SUPABASE_ANON_KEY` | the *anon public* key |
 | Variable | `TURNSTILE_SITE_KEY` | optional (free CAPTCHA site key) |
+| Variable | `REQUIRE_LOGIN` | optional; default on. Set to `false` to open the site without the sign-in wall |
+| Variable | `LOGIN_WALL_SECONDS` | optional; default `30` (free look before the sign-in pop-up) |
 | Variable | `CF_PAGES_PROJECT` | optional; default `fundrix-n18` (becomes `fundrix-n18.pages.dev`) |
 
-## 5. First deploy (demo data, works immediately)
-Push to `main` (or Actions -> *Update data and deploy* -> Run workflow with backfill `0`). With no real data yet, it publishes the **demo** dataset
-so you can check the site, logins and saved screens at `https://<project>.pages.dev`.
+## 5. First deploy
+The site only ever publishes **real** AMFI data, so go straight to step 6: nothing is deployed until real data exists (a push before that fails with a clear message, and nothing is published).
+Want to test the site, logins and saved screens first? Add the repository variable `ALLOW_DEMO_DATA` = `true`, push, and a **demo** dataset is published with a visible "Demo dataset" banner at the top. Remove the variable afterwards. With real data the banner never appears.
 
 ## 6. Load real data (one time) 
 Actions -> *Update data and deploy* -> **Run workflow** -> `backfill_weeks` = `530`.
@@ -60,6 +62,14 @@ Until then those columns are simply blank and the default screen hides the AUM /
 
 ## 9. Custom domain (optional, free)
 Cloudflare Pages project -> Custom domains. A domain name itself is not free; `*.pages.dev` is.
+
+## Compulsory sign-in (how it behaves)
+* A visitor gets `LOGIN_WALL_SECONDS` (30) of free browsing. Then a pop-up in the middle of the screen asks them to log in or sign up; it has no close button, ignores Esc and clicks outside, and the site behind it is blurred and inactive. Reloading does not restart the clock (per browser tab session).
+* Before the wall, guests can browse, sort, search, open fund pages and use the calculator, but **cannot edit filters, save screens, open saved screens/presets/shared links, compare funds or use the watchlist**: those show a "sign in to ..." prompt. After signing in they land on the page they were trying to reach.
+* Signed-in users are never locked. Logging out after the free look brings the wall back at once.
+* The gate only works when Supabase is configured (otherwise nobody could sign in, so it stays off), and it also stays off locally unless you fill `frontend/config.js`.
+* **Limits you should know:** this is a front-end gate. The fund data are static files that anyone can download directly (`/data/funds.json`), and a technical visitor can remove the pop-up in their browser's developer tools. What *is* really protected is each user's own saved screens and watchlist (Supabase Row Level Security). If the fund data itself must be private, it would have to be served from behind authentication, which is not possible on free static hosting.
+* If Supabase is down or paused, the wall cannot be passed: nobody can sign in until it is restored.
 
 ## Keeping it alive
 * GitHub disables scheduled workflows after ~60 days with no repository activity: open the Actions tab now and then, or push any small commit.

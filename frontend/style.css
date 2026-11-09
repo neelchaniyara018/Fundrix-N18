@@ -234,3 +234,18 @@ table.t { border-collapse: collapse; width: 100%; min-width: 760px; }
 .auth-card a:not(.btn) { color: var(--accent); } .auth-card a:not(.btn):hover { text-decoration: underline; }
 .auth-card .consent { align-items: flex-start; } .auth-card .consent input { margin-top: 3px; flex: none; }
 @media (max-width: 800px) { .auth-grid { grid-template-columns: minmax(0, 1fr); margin: 10px auto; } .auth-hero { display: none; } .auth-grid .auth-card { padding: 24px 20px 20px; } }
+
+/* sign-in gate */
+.gate-bg { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 16px; background: color-mix(in srgb, var(--bg) 55%, rgba(8, 14, 11, .72)); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.gate-card { position: relative; width: min(420px, 100%); text-align: center; padding: 30px 28px 24px; background: var(--panel); border: 1px solid var(--rule); border-radius: 16px; box-shadow: 0 24px 60px -20px rgba(0, 0, 0, .55); }
+.gate-card h2 { font-size: 26px; margin: 10px 0 8px; } .gate-card p { color: var(--muted); margin: 0 0 18px; }
+.gate-mark { width: 44px; height: 44px; color: var(--accent); }
+.gate-actions { display: grid; gap: 10px; } .gate-actions .btn { text-decoration: none; justify-content: center; padding: 11px; font-size: 15px; }
+.gate-x { position: absolute; top: 10px; right: 10px; } .gate-later { margin-top: 12px; color: var(--muted); }
+.lockbar { position: sticky; top: 0; z-index: 3; padding: 10px 16px; background: var(--soft); border-bottom: 1px solid var(--rule); font-size: 13px; }
+.lockbar a { color: var(--accent); font-weight: 600; text-decoration: underline; }
+.filters.locked { cursor: not-allowed; } .filters.locked [inert] { opacity: .55; }
+.lockbtn { font-size: 13px; opacity: .8; }
+.nav a.locked::after { content: " 🔒"; font-size: 11px; }
+
+.foot { max-width: 1440px; margin: 8px auto 0; padding: 14px 20px 28px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--rule); }

@@ -4,4 +4,6 @@ window.FUNDRIX_CONFIG = {
   supabaseUrl: "",        // e.g. "https://abcd1234.supabase.co"
   anonKey: "",            // Project Settings -> API -> anon public key
   turnstileSiteKey: "",   // optional: Cloudflare Turnstile site key (free CAPTCHA) for the sign-up form
+  requireLogin: true,     // true: visitors must sign in (needs the Supabase settings above). false: open site, no sign-in wall
+  loginWallSeconds: 30,   // free look before the sign-in pop-up covers the site
 };

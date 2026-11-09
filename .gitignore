@@ -1,0 +1,6 @@
+frontend/data/
+state/
+__pycache__/
+.pytest_cache/
+*.db
+.venv/
